@@ -2,16 +2,107 @@ import { openaiService } from "./openai.js";
 import { converter } from "./converter.js";
 import { removeFile } from "./utils.js";
 
-export const INITIAL_SESSION = {
-  messages: [],
-};
+function initializeSession(ctx) {
+  if (!ctx.session || typeof ctx.session !== "object") {
+    ctx.session = { context: [], context_meta: [], startTime: new Date().toLocaleString('en-US', { hour12: false }) };
+  }
+}
 
 export async function sendWelcomeMessage(ctx) {
-  ctx.session = { ...INITIAL_SESSION };
+  initializeSession(ctx);
   await ctx.reply(
     "What do you want to practice today?"
   );
 }
+
+export async function processTextToChat(ctx, content, type = 'text') {
+  initializeSession(ctx);
+
+  const messageId = ctx.message.message_id;
+  const userId = ctx.from.id;
+  
+  ctx.session.context.push({ role: openaiService.roles.USER, content });
+  if (type == 'text') {
+    ctx.session.context_meta.push({
+      role: 'user',
+      message_id: messageId,
+      type: 'text',
+      text_message: content,
+      date: Date.now(),
+    });
+  }
+
+  try {
+    const chatResponse = await openaiService.chat(ctx.session.context);
+
+    if (chatResponse && chatResponse.message) {
+      ctx.session.context.push({
+        role: openaiService.roles.ASSISTANT,
+        content: chatResponse.message.content,
+      });
+
+      ctx.session.context_meta.push({
+        role: 'assistant',
+        message_id: messageId,
+        type: 'text',
+        text_message: chatResponse.message.content,
+        date: Date.now(),
+        usage_tokens: chatResponse.usage_tokens,
+      });
+
+      return chatResponse.message.content;
+    }
+ 
+  } catch (e) {
+    console.log("Error while processing text to gpt", e.message);
+  }
+}
+
+export async function processVoiceMessage(ctx) {
+  initializeSession(ctx);
+
+  try {
+    const link = await ctx.telegram.getFileLink(ctx.message.voice.file_id);
+    const userId = String(ctx.message.from.id);
+    const messageId = ctx.message.message_id;
+    const oggPath = await converter.create(link.href, userId, messageId);
+    const mp3Path = await converter.toMp3(oggPath, messageId);
+
+    removeFile(oggPath);
+
+    const text = await openaiService.transcription(mp3Path);
+
+    ctx.session.context_meta.push({
+      role: 'user',
+      user_id: userId,
+      message_id: messageId,
+      type: 'audio',
+      path: link,
+      duration: ctx.message.voice.duration,
+      text_message: text,
+      date: Date.now(),
+    });
+
+    return text;
+  } catch (e) {
+    console.log(`Error while voice message`, e.message);
+  }
+}
+
+export async function processTextToVoice(ctx, content) {
+ 
+  try {
+    const userId = String(ctx.message.from.id);
+    const mp3Path = await openaiService.textToSpeech(content, userId);
+    const oggPath = await converter.toOgg(mp3Path, userId);
+
+    return oggPath
+  } catch (e) {
+    await ctx.reply("🙈 Opps, something went wrong, try sending agai");
+    console.log("Error while proccesing text to gpt", e.message);
+  }
+}
+
 
 async function getFileLink(ctx) {
   const photo = ctx.message.photo[ctx.message.photo.length - 1];
@@ -31,12 +122,34 @@ async function analyzeHomeworkImage(fileLink) {
 }
 
 export async function processHomeworkSubmission(ctx) {
-  ctx.session = { ...INITIAL_SESSION };
-  try {
-    await ctx.reply("🤔 Just a minute, let me see what we have here");
+  initializeSession(ctx);
 
+  const messageId = ctx.message.message_id;
+  const userId = ctx.from.id;
+  try {
     const fileLink = await getFileLink(ctx);
-    const analyzeImageText = await analyzeHomeworkImage(fileLink);
+    ctx.session.context_meta.push({
+      role: 'user',
+      user_id: userId,
+      message_id: messageId,
+      type: 'photo',
+      path: fileLink,
+      date: Date.now(),
+    });
+
+    const analyzeImageResponse = await analyzeHomeworkImage(fileLink);
+    const analyzeImageText = analyzeImageResponse.choices[0].message.content;
+    
+    ctx.session.context_meta.push({
+      role: 'assistant',
+      user_id: userId,
+      message_id: messageId,
+      type: 'photo',
+      model: analyzeImageResponse.model,
+      text_message: analyzeImageText,
+      date: Date.now(),
+      usage_tokens:  analyzeImageResponse.usage,
+    });
 
     const systemPrompt = [
       {
@@ -63,18 +176,26 @@ export async function processHomeworkSubmission(ctx) {
       }
     ];
 
-    const response = await openaiService.chat(systemPrompt, 1.63);
 
-    const text = response.content
+    const chatResponse = await openaiService.chat(systemPrompt, 1.63);
+    const text = chatResponse.message.content
 
-    ctx.session.messages.push({
+    ctx.session.context.push({
       role: "system",
       content:
         "You are a teacher of English. Use short messages. Talk with your student based situation. " + text,
     });
 
-    await ctx.reply(text);
-    await processTextToVoice(ctx, text)
+    ctx.session.context_meta.push({
+      role: 'assistant',
+      message_id: messageId,
+      type: 'text',
+      text_message: text,
+      date: Date.now(),
+      usage_tokens: chatResponse.usage_tokens,
+    });
+
+   return text
 
   } catch (e) {
     console.error(`Error in processHomeworkSubmission: ${e.message}`, e);
@@ -83,115 +204,3 @@ export async function processHomeworkSubmission(ctx) {
     );
   }
 }
-
-export async function processVoiceMessage(ctx) {
-  ctx.session = { ...INITIAL_SESSION };
-  try {
-    const link = await ctx.telegram.getFileLink(ctx.message.voice.file_id);
-    const userId = String(ctx.message.from.id);
-    const oggPath = await converter.create(link.href, userId);
-    const mp3Path = await converter.toMp3(oggPath, userId);
-
-    removeFile(oggPath);
-
-    const text = await openaiService.transcription(mp3Path);
-
-    return text;
-  } catch (e) {
-    console.log(`Error while voice message`, e.message);
-  }
-}
-
-export async function processTextToChat(ctx, content) {
-  ctx.session = { ...INITIAL_SESSION };
-  try {
-    ctx.session.messages.push({ role: openaiService.roles.USER, content });
-
-    const response = await openaiService.chat(ctx.session.messages);
-
-    ctx.session.messages.push({
-      role: openaiService.roles.ASSISTANT,
-      content: response.content,
-    });
-
-    return response.content;
-
-  } catch (e) {
-    console.log("Error while proccesing text to gpt", e.message);
-  }
-}
-
-export async function processTextToVoice(ctx, content) {
-  try {
-    const userId = String(ctx.message.from.id);
-    const mp3Path = await openaiService.textToSpeech(content, userId);
-    const oggPath = await converter.toOgg(mp3Path, userId);
-
-    await ctx.replyWithVoice({ source: oggPath });
-    
-  } catch (e) {
-    await ctx.reply("🙈 Opps, something went wrong, try sending agai");
-    console.log("Error while proccesing text to gpt", e.message);
-  }
-}
-
-export async function randomTopic(ctx) {
-  ctx.session = { ...INITIAL_SESSION };
-  try {
-    const startPromt = [
-      {
-        role: "system",
-        content:
-          "You are a supportive teacher of English. Use short messages. Goal is to practice English by speaking.",
-      },
-      {
-        role: "user",
-        content:
-          "Imagine some random situation we could talk about. Just briefly describe this situation and provide few examples how I could start the dialogue.",
-      }
-    ];
-    const response = await openaiService.chat(startPromt, 0.45, 256);
-
-    const text = response.content
-    
-    ctx.session.messages.push(
-      {
-        role: "system",
-        content:
-          "You are a teacher of English. The goal is to practice English. You will talk with your student about some imaginary situation. You should continue dialogue by this topic: " + text,
-      }
-    );
-
-    await processTextToVoice(ctx, text)
-    await ctx.reply(text);
-    await ctx.reply('Start a dialogue by sending me an voice message 🎙️👇');
-    
-  } catch (e) {
-    console.error("Error while processing text to gpt", e.message);
-    ctx.reply("Sorry, I encountered an error while analyzing the dialogue.");
-    ctx.session = {};
-  }
-}
-
-export async function analyzeDialogue(ctx) {
-  const systemPrompt =
-    "You are a teacher of English. Use short messages. Analyze our user's dialog and assess their English level. Give tips on how to improve their English ";
-  try {
-    ctx.session.messages.push({
-      role: openaiService.roles.SYSTEM,
-      content: systemPrompt,
-    });
-
-    const response = await openaiService.chat(ctx.session.messages);
-
-    await ctx.reply(response.content);
-
-  } catch (e) {
-    console.error("Error while processing text to gpt", e.message);
-    ctx.reply("Sorry, I encountered an error while analyzing the dialogue.");
-    ctx.session = {};
-  }
-}
-
-
-

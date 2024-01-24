@@ -1,26 +1,33 @@
 import { Telegraf, session } from "telegraf";
-import config from "config";
 import { message } from "telegraf/filters";
+import config from "config";
 import { code } from "telegraf/format";
-
+import { randomTopic, analyzeDialogue } from "./scenes.js";
 import {
   sendWelcomeMessage,
   processTextToChat,
-  processHomeworkSubmission,
   processVoiceMessage,
   processTextToVoice,
-  analyzeDialogue,
-  randomTopic,
-  INITIAL_SESSION,
+  processHomeworkSubmission,
 } from "./logic.js";
 
 const bot = new Telegraf(config.get("TELEGRAM_TOKEN"));
 
-bot.use(session())
-
-function initializeSession(ctx) {
-  ctx.session ??= INITIAL_SESSION;
+async function handleCommand(ctx, commandFunction, voiceReply = false) {
+  try {
+    const responseMessage = await commandFunction(ctx);
+    if (voiceReply) {
+      const oggPath = await processTextToVoice(ctx, responseMessage);
+      await ctx.replyWithVoice({ source: oggPath });
+    }
+    await ctx.reply(responseMessage);
+  } catch (e) {
+    console.log(`Error while handling command: ${e.message}`);
+    await ctx.reply("An error occurred, please try again.");
+  }
 }
+
+bot.use(session());
 
 bot.command("new", sendWelcomeMessage);
 
@@ -31,73 +38,65 @@ bot.command("homework", async (ctx) => {
 });
 
 bot.command("random", async (ctx) => {
-  initializeSession(ctx);
   try {
     await ctx.reply(code("🤔 Just a minute, let me see what we have here"));
-    await randomTopic(ctx);
+
+    await handleCommand(ctx, randomTopic, true);
+
+    await ctx.reply(
+      code("Start a dialogue by sending me an voice message 🎙️👇")
+    );
   } catch (e) {
     console.log(`Error while handling text message`, e.message);
   }
 });
 
 bot.command("results", async (ctx) => {
-  initializeSession(ctx);
   try {
     await ctx.reply(code("🤔 Just a minute, let me see what we have here"));
-    await analyzeDialogue(ctx, ctx.message.text);
+    await handleCommand(ctx, analyzeDialogue);
   } catch (e) {
     console.log(`Error while handling text message`, e.message);
   }
 });
-
 
 
 bot.on(message("text"), async (ctx) => {
-  initializeSession(ctx);
-  try {
-    const text = await processTextToChat(ctx, ctx.message.text);
-    
-    await processTextToVoice(ctx, text);
-    await ctx.reply(text);
-    await ctx.reply('Start a dialogue by sending me an voice message 🎙️👇');
-    
-  } catch (e) {
-    console.log(`Error while handling text message`, e.message);
+  if (!ctx.message.text.startsWith("/")) {
+    await handleCommand(ctx, () => processTextToChat(ctx, ctx.message.text), true);
   }
-  console.log(ctx.session)
+});
+
+bot.on(message("voice"), async (ctx) => {
+  await ctx.reply(
+    code("Message received. Waiting for a response from the server...")
+  );
+
+  const voiceText = await processVoiceMessage(ctx);
+
+  await ctx.reply(`Your request: ${voiceText}`);
+
+  const responseMessage = await processTextToChat(ctx, voiceText, "voice");
+  const oggPath = await processTextToVoice(ctx, responseMessage);
+
+  //Send Voice to chat
+  await ctx.replyWithVoice({ source: oggPath });
+  //Send Text to chat
+  await ctx.reply(responseMessage);
 });
 
 bot.on(message("photo"), async (ctx) => {
-  initializeSession(ctx);
+  await ctx.reply(code("🤔 Just a minute, let me see what we have here"));
   try {
-    await processHomeworkSubmission(ctx);
+
+    await handleCommand(ctx, () => processHomeworkSubmission(ctx), true);
+
+    await ctx.reply(
+      code("Start a dialogue by sending me an voice message 🎙️👇")
+    );
   } catch (e) {
     console.log(`Error while handling photo message`, e.message);
   }
 });
 
-bot.on(message("voice"), async (ctx) => {
-  initializeSession(ctx);
-  try {
-    await ctx.reply(
-      code("Message received. Waiting for a response from the server...")
-    );
-
-    const voiceText = await processVoiceMessage(ctx);
-
-    await ctx.reply(code(`Your request: ${voiceText}`));
-
-    const text = await processTextToChat(ctx, voiceText);
-
-    await processTextToVoice(ctx, text);
-    await ctx.reply(text);
-  } catch (e) {
-    console.log(`Error while voice message`, e.message);
-  }
-  console.log(ctx.session)
-});
-
-bot
-  .launch()
-  .then(() => console.log("Bot started successfully"))
-  .catch((error) => console.error("Bot did not start", error));
+bot.launch().catch((error) => console.error(error));

@@ -1,7 +1,9 @@
 import axios from "axios";
 import ffmpeg from "fluent-ffmpeg";
 import installer from "@ffmpeg-installer/ffmpeg";
-import { createWriteStream } from "fs";
+// import { createWriteStream } from "fs";
+import fs from "fs";
+import path from "path";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
@@ -44,18 +46,26 @@ class audioConverter {
     }
   }
 
-  async create(url, filename) {
+  async create(url, userId, messageId) {
     try {
-      const oggPath = resolve(__dirname, "../voices", `${filename}.ogg`);
+
+      const userDir = path.resolve(__dirname, "../voices", userId.toString());
+     
+      if (!fs.existsSync(userDir)) {
+        fs.mkdirSync(userDir, { recursive: true });
+      }
+    
+      const oggPath = path.resolve(userDir, `${messageId}.ogg`);
       const response = await axios({
         method: "get",
         url,
         responseType: "stream",
       });
-      return new Promise((resolve) => {
-        const stream = createWriteStream(oggPath);
+      return new Promise((resolve, reject) => {
+        const stream = fs.createWriteStream(oggPath);
         response.data.pipe(stream);
         stream.on("finish", () => resolve(oggPath));
+        stream.on("error", (err) => reject(err.message));
       });
     } catch (e) {
       console.log("Error while creating ogg", e.message);
