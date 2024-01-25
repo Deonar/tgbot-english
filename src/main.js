@@ -11,7 +11,8 @@ import {
   processHomeworkSubmission,
 } from "./logic.js";
 
-const bot = new Telegraf(config.get("TELEGRAM_TOKEN"));
+// const bot = new Telegraf(config.get("TELEGRAM_TOKEN"));
+const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 
 async function handleCommand(ctx, commandFunction, voiceReply = false) {
   try {

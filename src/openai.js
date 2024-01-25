@@ -6,7 +6,8 @@ import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-const OPENAI_KEY = config.get("OPENAI_KEY");
+// const OPENAI_KEY = config.get("OPENAI_KEY");
+const OPENAI_KEY = process.env.OPENAI_KEY;
 
 class OpenAIService {
   roles = {
